@@ -109,7 +109,7 @@ class Auto
       end
     end
 
-    def all
+    def run
       raise "Not implemented"
     end
 
@@ -197,7 +197,7 @@ class Auto
       }
     end
 
-    def all
+    def run
       puts "Creating Crucible review"
       create_review
       puts "Transitioning JIRA to 'Review'"
@@ -247,7 +247,7 @@ class Auto
       end
     end
 
-    def all
+    def run
       puts "Promoting git branch to master"
       promote_git
       puts "Committing to SVN trunk"
@@ -274,6 +274,6 @@ if $0 == __FILE__
   else
     $stderr.puts "Unknown command: #{ARGV.first.inspect}.  (Should be one of #{Auto::Base.commands.to_sentence :two_words_connector => ' or ', :last_word_connector => ', or '})"
     exit __LINE__
-  end.all
+  end.run
 
 end
