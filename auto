@@ -1,0 +1,279 @@
+#!/bin/env ruby
+
+require 'rubygems'
+require 'active_support'
+require 'net/http'
+require 'json'
+require 'highline'
+require 'highline/import'
+
+class Auto
+
+  class Base
+
+    def user
+      @user ||= `whoami`.strip
+    end
+
+    def pass
+      @pass ||= begin
+        file = File.expand_path '~/.auto.pass'
+        (File.read file rescue nil) || HighLine.ask("Enter jira/crucible password:  ") { |q| q.echo = false }.tap do |pass|
+          File.open(file, 'w') { |io| io.write pass }
+        end
+      end
+    end
+
+    def http(method, host, port, path, body=nil, qs=nil)
+      path = path + '?' + qs if qs
+      Net::HTTP.start(host, port) do |http|
+        request = Net::HTTP.const_get(method.to_s.titleize).new(path)
+        request['Content-Type'] = 'application/json'
+        request.basic_auth(user, pass)
+        request.body = body.try(:to_json)
+
+        case response = http.request(request)
+        when Net::HTTPNoContent, Net::HTTPOK, Net::HTTPCreated
+          JSON.parse(response.body) if response.body
+        else
+          puts response
+          File.open("/work/#{user}/debug.html", 'w') do |io|
+            io.puts "<h1>#{response.to_s.gsub('<', '&lt;')}</h1>"
+            io.puts "<pre>#{response.body.to_s.gsub('<', '&lt;')}</pre>"
+          end if File.directory?("/work/#{user}")
+          exit 1
+        end
+      end
+    end
+
+    [:get, :post, :put].each do |m|
+      define_method "jira_#{m}", lambda { |path, *args|
+        http(m, 'jira', 80, "/rest/api/2/#{path}.json", *args)
+      }
+      define_method "crucible_#{m}", lambda { |path, *args|
+        http(m, 'crucible', 8060, "/rest-service/#{path}.json", *args)
+      }
+    end
+
+    def jira_issues
+      @jira_issues ||= ENV['JIRA'] || `git rev-parse --abbrev-ref HEAD`.scan(/AN-\d+/).sort.tap do |issues|
+        raise "Not in a JIRA-based branch" if issues.empty?
+      end
+    end
+
+    def crucible_review
+      @crucible_review ||= begin
+        review = nil
+        jira_issues.each do |jira_issue|
+          matches = crucible_get('reviews-v1/filter', nil, "title=#{jira_issue.gsub /[^0-9]/, ''}&creator=#{user}").try(:fetch, "reviewData") || []
+          review = matches.detect { |m| m.try(:fetch, "jiraIssueKey") == jira_issue }.try(:fetch, 'permaId').try(:fetch, 'id') and break
+        end
+        review or raise "Can not find crucible review for #{jira_issues.to_sentence}"
+      end
+    end
+
+    def summaries
+      @summaries ||= jira_issues.map do |jira_issue|
+        jira_get("issue/#{jira_issue}").try(:fetch, 'fields').try(:fetch, 'summary') or raise "Can not find JIRA summary for #{jira_issue}"
+      end
+    end
+
+    def full_description
+      "[#{jira_issues * '] ['}] #{summaries.to_sentence}"
+    end
+
+    def git_status
+      `git status 2>&1 | grep -v "^#\\|^nothing to commit" | grep .`
+    end
+
+    def svn_status
+      `svn status 2>&1 | grep -v "^X\\|^Performing status on external" | grep .`
+    end
+
+    def patch
+      `svn diff -x -w -x --ignore-eol-style --diff-cmd diff --extensions '-U8'`.tap do
+        raise "Failed to produce patch file" unless $?.success?
+      end + "\\ No newline at end of file"
+    end
+
+    def transition_crucible(action, review=crucible_review)
+      crucible_post "reviews-v1/#{review}/transition", nil, "action=action:#{action}"
+    end
+
+    def transition_jira(state, extra_update_hash={})
+      jira_issues.each do |jira_issue|
+        state_id = jira_get("issue/#{jira_issue}/transitions")["transitions"].detect { |t| t["name"] == state }.try(:fetch, "id") or raise "Can not determine #{state} state id for #{jira_issue}"
+        jira_post "issue/#{jira_issue}/transitions", {
+          :transition => { :id => state_id },
+        }.merge(extra_update_hash)
+      end
+    end
+
+    def all
+      raise "Not implemented"
+    end
+
+    def self.descendants
+      ObjectSpace.each_object(Class).select { |klass| klass < self }
+    end
+
+    def self.commands
+      descendants.map { |c| c.name.demodulize.downcase }.sort
+    end
+
+  end
+
+  #############################################################################
+
+  class Review < Base
+
+    NON_ENGINEERS = %w[
+      awilliams
+      blittle
+      dbentley
+      mhubbard
+      pleury
+      khayden
+      clemons
+      vparsons
+    ]
+
+    attr_reader :reviewers
+
+    def initialize
+      @reviewers = []
+      user = nil
+      until user.nil? && @reviewers.present?
+        user = HighLine.new.choose { |menu| users(menu) }
+        @reviewers << user if user
+      end
+      @reviewers << 'pdeline'
+    end
+
+    def users(menu)
+      menu.shell = true
+      menu.choice('DONE') { nil }
+      users = crucible_get('users-v1').try(:fetch, "userData") or raise "Can not get list of active crucible users"
+      users.sort_by { |v| v["displayName"].to_s }.each do |v|
+        next if (reviewers + ignore_users).include? v["userName"] 
+        menu.choice(v["displayName"]) { v["userName"] }
+      end
+    end
+
+    def ignore_users
+      @ignore_users ||= NON_ENGINEERS + %W[pdeline #{user}]
+    end
+
+    def create_review
+      rev = crucible_post 'reviews-v1', {
+        :detailedReviewData => {
+          :projectKey => 'NATA',
+          :name => full_description,
+          :description => summaries.to_sentence,
+          :reviewers => { :reviewer => reviewers.map { |r| { :userName => r } } },
+          :type => 'REVIEW',
+          :allowReviewersToJoin => true,
+          :dueDate => 3.days.from_now.strftime('%Y-%m-%dT15:00:00.000+1000'),
+          :reminderDate => 2.days.from_now.strftime('%Y-%m-%dT15:00:00.000+1000'),
+          :jiraIssueKey => jira_issues.first, # API only allows one issue, but JIRA/Crucible seem to be smart enough to not need this
+        },
+        :patch => patch,
+        :anchor => {
+          :anchorPath => 'trunk',
+          :anchorRepository => 'Nimbus',
+        },
+      }
+      rev.try(:fetch, "permaId").try(:fetch, "id").tap do |review_id|
+        raise "Can not determine review id for new review" unless review_id
+        transition_crucible 'approveReview', review_id
+      end
+    end
+
+    def transition_jira_to_review
+      rev = reviewers.dup
+      transition_jira 'Review', :update => {
+        :customfield_10000 => [ { :set => { :name => rev.shift } } ], # Reviewer
+        :customfield_10079 => rev.map { |a| { :add => { :name => a } } }, # Additional Reviewers
+      }
+    end
+
+    def all
+      puts "Creating Crucible review"
+      create_review
+      puts "Transitioning JIRA to 'Review'"
+      transition_jira_to_review
+    end
+
+  end
+
+  #############################################################################
+
+  class Integrate < Base
+
+    def promote_git
+      jira_issues # check valid branch
+      branch = `git rev-parse --abbrev-ref HEAD`.strip
+      raise "Failure getting branch" unless $?.success?
+
+      `git checkout master && git pull && svn up --accept theirs-full --force`
+      raise "Failure pulling git or svn" unless $?.success?
+      raise "Git pullsvn was not clean" if git_status.present? || svn_status.present?
+
+      %x[git fetch --tags origin && git merge #{branch} && git push origin master && git rbranch -d #{branch} && git tag REL_\`date +%Y-%m-%d\`_#{branch} && git push --tags origin master]
+      raise "Failure promoting git" unless $?.success?
+    end
+
+    def commit_svn
+      puts "Please verify svn status:", '*' * 60, svn_status, '*' * 60
+      HighLine.agree('Is this correct?') or exit 1
+
+      `svn commit -m '#{full_description.gsub /'/, ''}'`
+      raise "Failuring committing svn" unless $?.success?
+    end
+
+    def summarize_and_close_review
+      %w[summarizeReview closeReview].each do |action|
+        transition_crucible(action)
+      end
+    end
+
+    def approve_and_integrate_jira
+      %w[Approve Integrate].each do |state|
+        begin
+          transition_jira(state)
+        rescue => e
+          $stderr.puts e.message
+        end
+      end
+    end
+
+    def all
+      puts "Promoting git branch to master"
+      promote_git
+      puts "Committing to SVN trunk"
+      commit_svn
+      puts "Summarizing and closing Crucible review"
+      summarize_and_close_review
+      puts "Transitioning JIRA to Approve and Integrate"
+      approve_and_integrate_jira
+    end
+
+  end
+
+end
+
+###############################################################################
+
+if $0 == __FILE__
+
+  case ARGV.first
+  when /review/i
+    Auto::Review.new
+  when /integrate/i
+    Auto::Integrate.new
+  else
+    $stderr.puts "Unknown command: #{ARGV.first.inspect}.  (Should be one of #{Auto::Base.commands.to_sentence :two_words_connector => ' or ', :last_word_connector => ', or '})"
+    exit __LINE__
+  end.all
+
+end
