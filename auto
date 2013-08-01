@@ -141,6 +141,7 @@ class Auto
     attr_reader :reviewers
 
     def initialize
+      jira_issues # check valid branch
       @reviewers = []
       user = nil
       until user.nil? && @reviewers.present?

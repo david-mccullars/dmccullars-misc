@@ -1,3 +1,4 @@
 #!/bin/env ruby
-load File.expand_path('../auto', __FILE__)
+file = File.readlink(file) while File.symlink?(file ||= __FILE__)
+load File.expand_path('../auto', file)
 Auto::Integrate.new.run
