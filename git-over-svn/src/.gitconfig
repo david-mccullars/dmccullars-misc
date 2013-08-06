@@ -1,0 +1,27 @@
+[color]
+	diff = auto
+	status = auto
+	branch = auto
+[core]
+	sharedRepository = true
+	preloadindex = true
+[receive]
+	denyCurrentBranch = ignore
+[diff]
+	noprefix = true
+[alias]
+	st = status
+	ci = commit
+	br = branch
+	co = checkout
+	df = diff
+	lg = log -p
+	who = shortlog -s --
+  rbranch = !bash -c '[ "$#" = 0 ] && git branch -r && exit 0 || [ "$#" = 1 ] && git push origin origin:refs/heads/$1 && git fetch --tags origin && git checkout --track -b $1 origin/$1 && exit 0 || [ "$1" = "-d" -o "$1" = "-D" -a "$#" = 2 ] && git checkout master && git branch $1 "$2" && git push origin ":$2" && exit 0 || echo \"usage: git rbranch (<name>)\" && exit 1' -
+	rbranch-checkout = !bash -c '[ "$#" = 1 ] && git fetch --tags origin && git checkout --track -b $1 origin/$1 && exit 0 || echo \"usage: git rbranch-checkout <name>\" && exit 1' -
+	rbranch-cleanup = "!bash -c 'git checkout master && git remote prune origin && remote_branches=`git branch -r | sed \"s/ *origin\\\\\\//::/\" | sed \"s/$/::/\"` && for branch in `git br -vv | grep -v \"^. *master\" | grep \"\\\\[origin/\" | sed \"s/^*//\" | sed \"s/^ *//\" | sed \"s/ .*//\"`; do if [[ $remote_branches != *\"::${branch}::\"* ]]; then echo \"Purging stale remote branch ${branch}\"; git branch -D $branch; fi; done' -"
+	promote-rel = !bash -c '[ "$#" = 1 ] && git checkout master && git pull && git fetch --tags origin && git merge $1 && git push origin master && git rbranch -d $1 && git tag REL_`date +%Y-%m-%d`_$1 && git push --tags origin master && exit 0 || echo \"usage: git promote-rel <branch>\" && exit 1' -
+	merge-master = !bash -c 'cb=`git branch | grep \"^\\\\*\" | sed \"s/^..//\"` && git pull && git checkout master && git pull && git checkout $cb && git merge master && git push origin $cb' -
+  svn-sync-master = !bash -c 'git reset --hard && git pull && svn up --force && REV=`svn info | grep Revision | sed \"s/.*:\\s*//\"` && git add . && git add -u . && git commit -m \"[nojira] svn up ($REV)\" && git push'
+  svn-sync = !bash -c 'BR=`git rev-parse --abbrev-ref HEAD` && git stash -u && git co master && ((svn up && git add . && git add -u . && git commit -m \"[nojira] svn up\" && git push) || true) && git co $BR && git merge master && git stash pop'
+  pullsvn = "!bash -c 'git pull && svn up --accept theirs-full --force && echo && echo ================ && (git st 2>&1 | grep -v \"^#\\\\|^nothing to commit\" | grep . || echo \"GIT IS CLEAN\") && echo ================ && (svn st 2>&1 | grep -v \"^X\\\\|^Performing status on external\" | grep . || echo \"SVN IS CLEAN\")'"
