@@ -7,7 +7,7 @@ echo $rev >> src/VERSION
 
 ./makeself-2.1.5/makeself.sh --follow src git-over-svn.sh "Git-over-svn one-time setup" ruby one-time-setup.rb
 
- Bypass the makeself stuff
+# Bypass the makeself stuff
 cat git-over-svn.sh \
 | sed "s/\$print_cmd \$print_cmd_arg/ignore=1 # \0/g" \
 | sed "s/echo . All good/ignore=1 # \0/g" \
