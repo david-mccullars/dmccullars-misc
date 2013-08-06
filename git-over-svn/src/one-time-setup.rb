@@ -48,7 +48,17 @@ unless File.exist?(bashprofile) && !HighLine.agree('Is it okay to modify your ba
   end
 end
 
+dest_dir = nil
+while dest_dir.nil? || !File.directory?(dest_dir)
+  dest_dir = HighLine.ask 'Where should I put nimbus-trunk?' do |q|
+    q.default = '~/work'
+  end
+  dest_dir = File.expand_path(dest_dir)
+  dest_dir = nil if dest_dir =~ %r{^/tmp/selfgz\d+$}
+end
+
 exec <<-END
+cd #{dest_dir} &&
 svn checkout http://crds/svn/storage/nimbus/trunk nimbus-trunk &&
 cd nimbus-trunk &&
 git clone gitolite@crds:nimbus-trunk.git &&
