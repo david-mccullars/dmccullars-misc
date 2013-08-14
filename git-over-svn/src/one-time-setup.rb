@@ -3,6 +3,19 @@ require 'fileutils'
 require 'highline'
 require 'highline/import'
 
+REPO, BRANCH = ARGV.empty? ? %w[nimbus trunk] : ARGV
+unless BRANCH
+  NAME = REPO
+  SVNURL = "http://crds/svn/storage/#{REPO}"
+else
+  NAME = "#{REPO}-#{BRANCH}"
+  if BRANCH == 'trunk'
+    SVNURL = "http://crds/svn/storage/#{REPO}/trunk"
+  else
+    SVNURL = "http://crds/svn/storage/#{REPO}/branches/#{BRANCH}"
+  end
+end
+
 def ask_full_name
   HighLine.ask 'What is your full name' do |q|
     q.validate = /\A\S+\s+\S+/
@@ -50,7 +63,7 @@ end
 
 dest_dir = nil
 while dest_dir.nil? || !File.directory?(dest_dir)
-  dest_dir = HighLine.ask 'Where should I put nimbus-trunk?' do |q|
+  dest_dir = HighLine.ask "Where should I put #{NAME}?" do |q|
     q.default = '~/work'
   end
   dest_dir = File.expand_path(dest_dir)
@@ -59,11 +72,11 @@ end
 
 exec <<-END
 cd #{dest_dir} &&
-svn checkout http://crds/svn/storage/nimbus/trunk nimbus-trunk &&
-cd nimbus-trunk &&
-git clone gitolite@crds:nimbus-trunk.git &&
-mv nimbus-trunk/.git . &&
-rm -fr nimbus-trunk &&
+svn checkout #{SVNURL} #{NAME} &&
+cd #{NAME} &&
+git clone gitolite@crds:#{NAME}.git &&
+mv #{NAME}/.git . &&
+rm -fr #{NAME} &&
 git config core.filemode false &&
 (git update-index --refresh || echo) &&
 sleep 2 &&
