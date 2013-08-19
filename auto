@@ -9,6 +9,8 @@ require 'highline/import'
 
 class Auto
 
+  TEST_MODE = ENV['TEST'] == 'true'
+
   class Base
 
     def user
@@ -48,27 +50,44 @@ class Auto
 
     [:get, :post, :put].each do |m|
       define_method "jira_#{m}", lambda { |path, *args|
-        http(m, 'jira', 80, "/rest/api/2/#{path}.json", *args)
+        http(m, "jira#{'-test' if TEST_MODE}", 80, "/rest/api/2/#{path}.json", *args)
       }
       define_method "crucible_#{m}", lambda { |path, *args|
         http(m, 'crucible', 8060, "/rest-service/#{path}.json", *args)
       }
     end
 
+    def jira_project_regex
+      @jira_project_regex ||= Regexp.new "(?:" + jira_get("project").map { |h| h['key'] } * '|' + ")-\\d+"
+    end
+
     def jira_issues
-      @jira_issues ||= ENV['JIRA'] || `git rev-parse --abbrev-ref HEAD`.scan(/AN-\d+/).sort.tap do |issues|
+      @jira_issues ||= ENV['JIRA'] || `git rev-parse --abbrev-ref HEAD`.scan(jira_project_regex).sort.tap do |issues|
         raise "Not in a JIRA-based branch" if issues.empty?
       end
     end
 
     def crucible_review
       @crucible_review ||= begin
-        review = nil
+        reviews = []
         jira_issues.each do |jira_issue|
           matches = crucible_get('reviews-v1/filter', nil, "title=#{jira_issue.gsub /[^0-9]/, ''}&creator=#{user}").try(:fetch, "reviewData") || []
-          review = matches.detect { |m| m.try(:fetch, "jiraIssueKey") == jira_issue }.try(:fetch, 'permaId').try(:fetch, 'id') and break
+          reviews += matches.select { |m| m && m["jiraIssueKey"] == jira_issue && m["state"] == "Review" }
         end
-        review or raise "Can not find crucible review for #{jira_issues.to_sentence}"
+        reviews.sort_by { |m| m["createDate"] }.last.try(:fetch, 'permaId').try(:fetch, 'id') or raise "Can not find crucible review for #{jira_issues.to_sentence}"
+      end
+    end
+
+    def jira_project_to_crucible_project(jira_project)
+      case jira_project
+      when /^(AN|ANT)-/
+        'NATA'
+      when /^(BF|BFRQ|BT)-/
+        'rva'
+      when /^(TL|AT)-/
+        'VTS'
+      else
+        'CR'
       end
     end
 
@@ -90,10 +109,41 @@ class Auto
       `svn status 2>&1 | grep -v "^X\\|^Performing status on external" | grep .`
     end
 
+    def svn_adds_and_removes
+      # Recursively delete files/folders that git is missing but is still in SVN
+      system_or_exit %[svn up --force | grep "^A " | sed "s/^A *//" | sort -r | xargs -d '\n' --no-run-if-empty svn rm]
+
+      # Put back any files removed by git
+      system_or_exit %[git clean -f]
+
+      # Remove any additional files svn has but are removed from git
+      system_or_exit %[svn status | grep '^! ' | sed "s/^! *//" | xargs -d '\n' --no-run-if-empty svn rm]
+
+      # Add any files/directories svn is missing but that is in git
+      system_or_exit %[svn status | grep '^? ' | sed "s/^? *//" | xargs -d '\n' --no-run-if-empty svn add]
+    end
+
+    def git_and_svn_restore
+      system_or_exit 'svn up --force'
+      system_or_exit 'svn revert -R .'
+      system_or_exit 'git reset --hard'
+      system_or_exit 'git clean -df'
+    end
+
+    def system_or_exit(cmd)
+      unless system("#{cmd} > /dev/null")
+        $stderr.puts "Command failed, exiting:  #{cmd}"
+        exit __LINE__
+      end
+    end
+
     def patch
+      svn_adds_and_removes
       `svn diff -x -w -x --ignore-eol-style --diff-cmd diff --extensions '-U8'`.tap do
         raise "Failed to produce patch file" unless $?.success?
       end + "\\ No newline at end of file"
+    ensure
+      git_and_svn_restore
     end
 
     def transition_crucible(action, review=crucible_review)
@@ -107,6 +157,8 @@ class Auto
           :transition => { :id => state_id },
         }.merge(extra_update_hash)
       end
+    rescue => e
+      $stderr.puts e.message
     end
 
     def run
@@ -148,7 +200,7 @@ class Auto
         user = HighLine.new.choose { |menu| users(menu) }
         @reviewers << user if user
       end
-      @reviewers << 'pdeline'
+      @reviewers << 'pdeline' unless TEST_MODE
     end
 
     def users(menu)
@@ -168,7 +220,7 @@ class Auto
     def create_review
       rev = crucible_post 'reviews-v1', {
         :detailedReviewData => {
-          :projectKey => 'NATA',
+          :projectKey => jira_project_to_crucible_project(jira_issues.first),
           :name => full_description,
           :description => summaries.to_sentence,
           :reviewers => { :reviewer => reviewers.map { |r| { :userName => r } } },
@@ -225,11 +277,15 @@ class Auto
     end
 
     def commit_svn
+      svn_adds_and_removes
       puts "Please verify svn status:", '*' * 60, svn_status, '*' * 60
-      HighLine.agree('Is this correct?') or exit 1
-
-      `svn commit -m '#{full_description.gsub /'/, ''}'`
-      raise "Failuring committing svn" unless $?.success?
+      if HighLine.agree('Is this correct?')
+        `svn commit -m '#{full_description.gsub /'/, ''}'`
+        return if $?.success?
+        $stderr.puts "Failuring committing svn"
+      end
+      git_and_svn_restore
+      exit 1
     end
 
     def summarize_and_close_review
@@ -240,11 +296,7 @@ class Auto
 
     def approve_and_integrate_jira
       %w[Approve Integrate].each do |state|
-        begin
-          transition_jira(state)
-        rescue => e
-          $stderr.puts e.message
-        end
+        transition_jira(state)
       end
     end
 
@@ -261,6 +313,15 @@ class Auto
 
   end
 
+  class Test < Base
+
+    def run
+      # USED FOR TESTING AND DEVELOPMENT
+      puts "TEST"
+    end
+
+  end
+
 end
 
 ###############################################################################
@@ -272,6 +333,8 @@ if $0 == __FILE__
     Auto::Review.new
   when /integrate/i
     Auto::Integrate.new
+  when /test/i
+    Auto::Test.new
   else
     $stderr.puts "Unknown command: #{ARGV.first.inspect}.  (Should be one of #{Auto::Base.commands.to_sentence :two_words_connector => ' or ', :last_word_connector => ', or '})"
     exit __LINE__
