@@ -110,11 +110,7 @@ class Auto
     end
 
     def svn_adds_and_removes
-      # Recursively delete files/folders that git is missing but is still in SVN
-      system_or_exit %[svn up --force | grep "^A " | sed "s/^A *//" | sort -r | xargs -d '\n' --no-run-if-empty svn rm]
-
-      # Put back any files removed by git
-      system_or_exit %[git clean -f]
+      # TODO:  Support deletion of folders.  Git and SVN do not get along in this regard.
 
       # Remove any additional files svn has but are removed from git
       system_or_exit %[svn status | grep '^! ' | sed "s/^! *//" | xargs -d '\n' --no-run-if-empty svn rm]
@@ -127,7 +123,8 @@ class Auto
       system_or_exit 'svn up --force'
       system_or_exit 'svn revert -R .'
       system_or_exit 'git reset --hard'
-      system_or_exit 'git clean -df'
+      system_or_exit 'git clean -f'
+      # TODO:  Support deletion of folders.  Git and SVN do not get along in this regard.
     end
 
     def system_or_exit(cmd)
@@ -272,7 +269,7 @@ class Auto
       raise "Failure pulling git or svn" unless $?.success?
       raise "Git pullsvn was not clean" if git_status.present? || svn_status.present?
 
-      %x[git fetch --tags origin && git merge #{branch} && git clean -df]
+      %x[git fetch --tags origin && git merge #{branch}]
       raise "Failure merging git" unless $?.success?
       branch
     end
