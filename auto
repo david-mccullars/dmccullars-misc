@@ -263,7 +263,7 @@ class Auto
 
   class Integrate < Base
 
-    def promote_git
+    def merge_git
       jira_issues # check valid branch
       branch = `git rev-parse --abbrev-ref HEAD`.strip
       raise "Failure getting branch" unless $?.success?
@@ -272,7 +272,17 @@ class Auto
       raise "Failure pulling git or svn" unless $?.success?
       raise "Git pullsvn was not clean" if git_status.present? || svn_status.present?
 
-      %x[git fetch --tags origin && git merge #{branch} && git push origin master && git rbranch -d #{branch} && git tag REL_\`date +%Y-%m-%d\`_#{branch} && git push --tags origin master]
+      %x[git fetch --tags origin && git merge #{branch} && git clean -df]
+      raise "Failure merging git" unless $?.success?
+      branch
+    end
+
+    def restore_git_master(branch)
+      %x[svn up --force && git reset --hard origin/master && git checkout #{branch}]
+    end  
+
+    def promote_git(branch)
+      %x[git push origin master && git rbranch -d #{branch} && git tag REL_\`date +%Y-%m-%d\`_#{branch} && git push --tags origin master]
       raise "Failure promoting git" unless $?.success?
     end
 
@@ -281,11 +291,11 @@ class Auto
       puts "Please verify svn status:", '*' * 60, svn_status, '*' * 60
       if HighLine.agree('Is this correct?')
         `svn commit -m '#{full_description.gsub /'/, ''}'`
-        return if $?.success?
+        return true if $?.success?
         $stderr.puts "Failuring committing svn"
       end
       git_and_svn_restore
-      exit 1
+      false
     end
 
     def summarize_and_close_review
@@ -301,10 +311,18 @@ class Auto
     end
 
     def run
-      puts "Promoting git branch to master"
-      promote_git
+      puts "Merging git branch to master"
+      branch = merge_git
       puts "Committing to SVN trunk"
-      commit_svn
+      unless commit_svn
+        puts "Restoring master branch"
+        restore_git_master(branch)
+        exit 1
+      else
+        puts "Promoting git branch to master"
+        promote_git(branch)
+      end
+
       puts "Summarizing and closing Crucible review"
       summarize_and_close_review
       puts "Transitioning JIRA to Approve and Integrate"
