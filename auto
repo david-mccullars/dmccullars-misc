@@ -265,7 +265,7 @@ class Auto
       branch = `git rev-parse --abbrev-ref HEAD`.strip
       raise "Failure getting branch" unless $?.success?
 
-      `git checkout master && git pull && svn up --accept theirs-full --force`
+      `git checkout master && git submodule update && git pull && svn up --accept theirs-full --force`
       raise "Failure pulling git or svn" unless $?.success?
       raise "Git pullsvn was not clean" if git_status.present? || svn_status.present?
 
@@ -275,7 +275,7 @@ class Auto
     end
 
     def restore_git_master(branch)
-      %x[svn up --force && git reset --hard origin/master && git checkout #{branch}]
+      %x[svn up --force && git reset --hard origin/master && git checkout #{branch} && git submodule update]
     end  
 
     def promote_git(branch)
