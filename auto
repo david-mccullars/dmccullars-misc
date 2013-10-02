@@ -136,7 +136,7 @@ class Auto
 
     def patch
       svn_adds_and_removes
-      `svn diff -x -w -x --ignore-eol-style --diff-cmd diff --extensions '-U8'`.tap do
+      `svn diff --force -x -w -x --ignore-eol-style --diff-cmd diff --extensions '-U8'`.tap do
         raise "Failed to produce patch file" unless $?.success?
       end + "\\ No newline at end of file"
     ensure
