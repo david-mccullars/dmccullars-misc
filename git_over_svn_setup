@@ -1,0 +1,48 @@
+if [ -z "$1" ]; then
+  echo "Usage: $0 1 [BRANCH]"
+  exit 1
+fi
+
+BRANCH=$2
+if [ -z "$BRANCH" ]; then
+  NAME=$1
+  SVNURL="http://crds/svn/storage/$1"
+else
+  NAME="$1-$BRANCH"
+  if [ "$BRANCH" = "trunk" ]; then
+    SVNURL="http://crds/svn/storage/$1/trunk"
+  else
+    SVNURL="http://crds/svn/storage/$1/branches/$BRANCH"
+  fi
+fi
+
+#echo $NAME && echo $SVNURL && exit 0
+
+pushd /mnt/store/git/dmccullars
+
+git clone gitolite@crds:gitolite-admin.git
+pushd gitolite-admin
+echo -e "\nrepo $NAME\n RW+ = @all" >> conf/gitolite.conf
+git commit -am "Add new $NAME repo"
+git push
+popd
+rm -fr gitolite-admin
+
+svn checkout $SVNURL $NAME.clean
+pushd $NAME.clean
+
+git clone gitolite@localhost:$NAME.git
+mv $NAME/.git .
+rmdir $NAME
+
+ruby ~/gitignore_from_svnignore.rb
+
+git config core.filemode false
+git add .
+git commit -m Init
+git push origin master
+
+cronline="*/10 * * * * ./git_over_svn_sync $NAME.clean"
+(crontab -l; echo "$cronline") | crontab -
+
+popd

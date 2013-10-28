@@ -1,0 +1,19 @@
+#!/bin/bash
+
+cd /mnt/store/git/dmccullars/$1
+git checkout -q master    > /dev/null &&
+git reset --hard          > /dev/null &&
+git pull -q origin master > /dev/null &&
+svn up --force            > /dev/null ||
+exit $?
+
+if [[ `date "+%M"` =~ [05]$ ]]; then
+  ruby ~/gitignore_from_svnignore.rb > /dev/null ||
+  exit $?
+fi
+
+REV=`svn info | grep Revision | sed "s/.*:\\s*//"`
+git add .                        > /dev/null &&
+git add -u .                     > /dev/null &&
+git commit -q -m "{$REV} SVN UP" > /dev/null &&
+git push -q origin master        > /dev/null
